@@ -10,6 +10,8 @@ from healcode.core.loop import HealingLoop
 from healcode.runners import get_runner
 from healcode.analyzer.traceback_parser import TracebackParser
 from healcode.sandbox.git_manager import GitManager
+from healcode.reporting.report_generator import ReportGenerator
+from healcode.watcher import DirectoryWatcher
 from healcode.ui.console import console
 from healcode.ui.views import render_banner, render_test_failure
 
@@ -25,7 +27,7 @@ def heal(
         None, help="Specific test file or test target (e.g. tests/test_calc.py::test_add)"
     ),
     model: str = typer.Option(
-        "gemini-2.5-flash", "--model", "-m", help="Google Gemini model identifier"
+        "gemini-3.6-flash", "--model", "-m", help="Google Gemini model identifier"
     ),
     max_retries: int = typer.Option(
         3, "--max-retries", "-r", help="Maximum healing attempts per test failure"
@@ -44,6 +46,9 @@ def heal(
     ),
     git_checkpoint: bool = typer.Option(
         True, "--git-checkpoint/--no-git-checkpoint", help="Enable git safety checkpointing"
+    ),
+    report: Optional[str] = typer.Option(
+        None, "--report", help="Save diagnostic report ('md', 'html', or 'both')"
     ),
 ):
     """Run test suite and autonomously heal any failing tests."""
@@ -71,10 +76,23 @@ def heal(
         git_checkpoint=git_checkpoint,
         auto_commit=auto_commit,
         interactive=interactive,
+        report_format=report,
     )
 
     loop = HealingLoop(config)
     state = loop.run(target)
+
+    # Generate diagnostic report if requested
+    if report:
+        report_fmt = report.lower()
+        if report_fmt in ("md", "both"):
+            md_path = dir / "healcode-report.md"
+            ReportGenerator.generate_markdown(state, md_path)
+            console.print(f"[bold green]✔ Saved Markdown report to:[/bold green] {md_path}")
+        if report_fmt in ("html", "both"):
+            html_path = dir / "healcode-report.html"
+            ReportGenerator.generate_html(state, html_path)
+            console.print(f"[bold green]✔ Saved HTML report to:[/bold green] {html_path}")
 
     if not state.is_healed and state.initial_test_result and not state.initial_test_result.success:
         raise typer.Exit(code=1)
@@ -111,6 +129,35 @@ def scan(
         render_test_failure(diag)
 
 @app.command()
+def watch(
+    target: Optional[str] = typer.Argument(
+        None, help="Specific test file or target to run on change"
+    ),
+    test_cmd: str = typer.Option(
+        "pytest", "--test-cmd", "-c", help="Test runner command (pytest, unittest)"
+    ),
+    dir: Path = typer.Option(
+        Path.cwd(), "--dir", "-d", help="Target repository directory"
+    ),
+    auto_heal: bool = typer.Option(
+        True, "--auto-heal/--no-auto-heal", help="Automatically trigger healing loop on failure"
+    ),
+    model: str = typer.Option(
+        "gemini-3.6-flash", "--model", "-m", help="Google Gemini model identifier"
+    ),
+):
+    """Watch directory for Python file changes and automatically test & heal in the background."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    config = HealConfig(
+        gemini_api_key=api_key,
+        model=model,
+        test_command=test_cmd,
+        target_dir=dir,
+    )
+    watcher = DirectoryWatcher(dir)
+    watcher.watch(config=config, auto_heal=auto_heal, test_target=target)
+
+@app.command()
 def info():
     """Display environment configuration and agent diagnostic status."""
     render_banner()
@@ -123,7 +170,7 @@ def info():
 
     console.print(Panel(
         f"[bold cyan]Gemini API Key:[/bold cyan] {masked_key}\n"
-        f"[bold cyan]Default Model:[/bold cyan] gemini-2.5-flash\n"
+        f"[bold cyan]Default Model:[/bold cyan] gemini-3.6-flash (with automatic resilient failover)\n"
         f"[bold cyan]Git Repository:[/bold cyan] {'Yes' if is_git else 'No'} (Branch: {branch})\n"
         f"[bold cyan]Python Version:[/bold cyan] {sys.version.split()[0]}\n"
         f"[bold cyan]Working Directory:[/bold cyan] {Path.cwd()}",
