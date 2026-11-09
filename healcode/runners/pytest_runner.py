@@ -39,8 +39,26 @@ class PytestRunner(BaseTestRunner):
         passed, failed, error, skipped = self._parse_summary_counts(stdout)
         failures = self._parse_failures(stdout)
 
+        # Check if pytest found no tests (pytest exit code 5 is NO_TESTS_COLLECTED)
+        if exit_code == 5 or ("collected 0 items" in stdout and exit_code != 0):
+            error = 1
+            hint = "Pytest discovered 0 tests. By default, pytest only scans files matching 'test_*.py' or '*_test.py'."
+            try:
+                non_standard = [p.name for p in self.work_dir.glob("test*.py") if not p.name.startswith("test_")]
+                if non_standard:
+                    hint += f" Did you mean to target '{non_standard[0]}'? Run: healcode scan {non_standard[0]}"
+            except Exception:
+                pass
+            failures.append(
+                TestCaseResult(
+                    name="NoTestsFoundError",
+                    status=TestStatus.ERROR,
+                    message=hint,
+                    traceback=f"NoTestsFoundError: {hint}\n",
+                )
+            )
         # In case counts were not matched by regex (e.g. fatal syntax error during collection)
-        if exit_code != 0 and failed == 0 and error == 0:
+        elif exit_code != 0 and failed == 0 and error == 0:
             error = 1
             if not failures:
                 failures.append(
