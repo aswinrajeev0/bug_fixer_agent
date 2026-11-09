@@ -178,6 +178,54 @@ def info():
         border_style="cyan"
     ))
 
+@app.command()
+def install_hook(
+    mode: str = typer.Option("scan", "--mode", "-m", help="Hook behavior: 'scan' (block push) or 'heal' (auto-fix)"),
+    dir: Path = typer.Option(Path.cwd(), "--dir", "-d", help="Target git repository"),
+):
+    """Install a Git pre-push hook to prevent pushing broken tests."""
+    git_dir = dir / ".git"
+    if not git_dir.exists():
+        console.print("[bold red]Not a git repository. Run 'git init' first.[/bold red]")
+        raise typer.Exit(code=1)
+
+    hooks_dir = git_dir / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_file = hooks_dir / "pre-push"
+
+    if mode == "heal":
+        script_body = (
+            "#!/bin/sh\n"
+            "echo \"⚡ [HealCode] Verifying tests before git push...\"\n"
+            "healcode heal --non-interactive --auto-commit\n"
+            "if [ $? -ne 0 ]; then\n"
+            "    echo \"❌ [HealCode] Tests failed and could not be auto-resolved. Push cancelled.\"\n"
+            "    exit 1\n"
+            "fi\n"
+        )
+    else:
+        script_body = (
+            "#!/bin/sh\n"
+            "echo \"🔍 [HealCode] Scanning tests before git push...\"\n"
+            "healcode scan\n"
+            "if [ $? -ne 0 ]; then\n"
+            "    echo \"❌ [HealCode] Failing tests detected! Push blocked.\"\n"
+            "    echo \"💡 Run 'healcode heal' to automatically fix the bugs.\"\n"
+            "    exit 1\n"
+            "fi\n"
+        )
+
+    hook_file.write_text(script_body, encoding="utf-8")
+    try:
+        # Make executable on Unix/Linux/macOS
+        hook_file.chmod(0o755)
+    except Exception:
+        pass
+
+    console.print(
+        f"[bold green]✔ Successfully installed Git pre-push hook in:[/bold green] {hook_file} (Mode: {mode})"
+    )
+
 def main():
     app()
 

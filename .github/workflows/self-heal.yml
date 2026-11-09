@@ -1,0 +1,79 @@
+name: HealCode Autonomous Self-Healing CI
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+    inputs:
+      test_target:
+        description: "Optional specific test path (e.g. tests/test_auth.py)"
+        required: false
+        default: ""
+
+jobs:
+  test-and-heal:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install git+https://github.com/${{ github.repository }}.git#subdirectory=healcode || pip install .
+
+      - name: Run Test Suite & Self-Heal
+        id: healcode
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          HEALCODE_MODEL: "gemini-3.6-flash"
+        run: |
+          # Run HealCode in non-interactive CI mode with HTML/Markdown reports
+          healcode heal ${{ github.event.inputs.test_target }} \
+            --non-interactive \
+            --auto-commit \
+            --report both
+
+      - name: Upload Diagnostic Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: healcode-diagnostic-report
+          path: |
+            healcode-report.html
+            healcode-report.md
+
+      - name: Add Report to GitHub Actions Summary
+        if: always()
+        run: |
+          if [ -f healcode-report.md ]; then
+            cat healcode-report.md >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Create Pull Request with Verified Fix
+        if: success() && steps.healcode.outputs.healed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "fix(autoheal): verified automated bug fix by HealCode"
+          title: "🤖 [HealCode] Automated Bug Fix & Test Verification"
+          body: |
+            ### ⚡ Automated Self-Healing Patch
+            HealCode detected failing tests, formulated a root-cause diagnosis, and verified this fix using Google Gemini.
+
+            Please review the attached diff and merge when ready.
+          branch: "healcode/automated-fix-${{ github.run_id }}"
+          delete-branch: true
